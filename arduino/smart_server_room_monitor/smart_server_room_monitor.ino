@@ -17,8 +17,9 @@
 
 #define USE_PASSIVE_BUZZER false
 
-// Doi thanh true neu module relay cua ban la loai ACTIVE-LOW (kich muc LOW de dong tiep diem)
-#define RELAY_ACTIVE_LOW false
+// Module relay dang dung la loai ACTIVE-LOW: kich muc LOW moi dong tiep diem.
+// Doi thanh false neu thay 2 nut bat/tat bi nguoc nhau.
+#define RELAY_ACTIVE_LOW true
 
 // Tam thoi KHONG dung 3 LED trang thai (xanh/vang/do). Doi thanh true de dung lai.
 #define USE_STATUS_LEDS false
