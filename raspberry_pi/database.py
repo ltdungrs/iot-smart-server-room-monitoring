@@ -120,5 +120,16 @@ def get_recent_access_logs(limit=8):
     return [dict(r) for r in rows]
 
 
+def get_db_stats():
+    """Dem so dong & id moi nhat cua tung bang - de dashboard hien thi ghi DB lien tuc."""
+    conn = get_db_connection()
+    stats = {}
+    for table in ("logs", "incidents", "access_logs"):
+        row = conn.execute(f"SELECT COUNT(*) AS c, MAX(id) AS last_id FROM {table}").fetchone()
+        stats[table] = {"count": row["c"] or 0, "last_id": row["last_id"]}
+    conn.close()
+    return stats
+
+
 if __name__ == "__main__":
     init_db()

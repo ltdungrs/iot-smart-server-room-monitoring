@@ -60,9 +60,41 @@
             --bs-table-border-color: #374151;
             font-size: 0.85rem;
         }
+        /* Panel tinh trang Hardware (debug) */
+        .hw-dot {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 6px;
+        }
+        .hw-ok { background: #10b981; box-shadow: 0 0 6px #10b981; }
+        .hw-warning { background: #f59e0b; box-shadow: 0 0 6px #f59e0b; }
+        .hw-error { background: #ef4444; box-shadow: 0 0 6px #ef4444; animation: hw-blink 1s infinite; }
+        .hw-idle { background: #6b7280; }
+        .hw-unknown { background: #6b7280; }
+        @keyframes hw-blink { 50% { opacity: .35; } }
+
+        /* Khu vuc Database ghi lien tuc */
+        .db-stat-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            background: rgba(255,255,255,0.02);
+        }
+        .db-pulse { animation: db-flash 0.8s ease-out; }
+        @keyframes db-flash {
+            0% { background: rgba(16,185,129,0.35); border-color: #10b981; }
+            100% { background: rgba(255,255,255,0.02); border-color: var(--border-color); }
+        }
     </style>
 </head>
 <body>
+
+    <audio id="alert-audio" src="/static/alert.mp3" preload="auto"></audio>
 
     <!-- Header -->
     <header class="dashboard-header">
@@ -77,6 +109,10 @@
                 </div>
             </div>
             <div class="d-flex align-items-center gap-3">
+                <button id="sound-toggle-btn" class="btn btn-sm btn-outline-secondary" onclick="toggleAlertSound()">
+                    <i id="sound-toggle-icon" class="bi bi-volume-mute-fill"></i>
+                    <span id="sound-toggle-label">Bật âm thanh cảnh báo</span>
+                </button>
                 <span class="badge bg-dark border border-secondary px-3 py-2 font-mono">
                     <i class="bi bi-clock me-1 text-info"></i><span id="last-update">--:--:--</span>
                 </span>
@@ -99,7 +135,7 @@
                         <small id="status-desc" class="opacity-75">Đang chờ tín hiệu từ Arduino...</small>
                     </div>
                     <div class="small font-mono">
-                        Quạt Servo (D9): <span id="val-servo" class="fw-bold">0%</span>
+                        Quạt Servo (Pi GPIO18): <span id="val-servo" class="fw-bold">0%</span>
                     </div>
                 </div>
             </div>
@@ -185,7 +221,7 @@
                         <h6 class="fw-bold text-uppercase text-secondary mb-3">
                             <i class="bi bi-sliders me-2 text-warning"></i>Điều khiển từ xa (2 Chiều)
                         </h6>
-                        <label class="small text-secondary fw-semibold mb-1">QUẠT LÀM MÁT (SERVO D9):</label>
+                        <label class="small text-secondary fw-semibold mb-1">QUẠT LÀM MÁT (SERVO - Pi GPIO18):</label>
                         <div class="d-grid gap-2 mb-3">
                             <div class="btn-group">
                                 <button class="btn btn-outline-info fw-semibold" onclick="sendControl('VENT_OPEN')">
@@ -263,6 +299,47 @@
                 </div>
             </div>
         </div>
+
+        <!-- Hàng 4: Tình trạng kết nối Hardware (Monitor + Debug) & Database ghi liên tục -->
+        <div class="row g-3 mt-1">
+            <div class="col-12 col-lg-8">
+                <div class="metric-card h-100">
+                    <h6 class="fw-bold text-uppercase text-secondary mb-3">
+                        <i class="bi bi-cpu-fill me-2 text-info"></i>Tình trạng kết nối Hardware (Monitor + Debug)
+                    </h6>
+                    <div class="table-responsive" style="max-height: 320px; overflow-y: auto;">
+                        <table class="table table-dark-custom table-hover mb-0">
+                            <thead>
+                                <tr class="text-secondary">
+                                    <th>Chân</th>
+                                    <th>Thiết bị</th>
+                                    <th>Vai trò</th>
+                                    <th>Trạng thái</th>
+                                    <th>Chi tiết</th>
+                                </tr>
+                            </thead>
+                            <tbody id="hw-table-body">
+                                <tr><td colspan="5" class="text-center text-secondary">Đang quét hardware...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-12 col-lg-4">
+                <div class="metric-card h-100">
+                    <h6 class="fw-bold text-uppercase text-secondary mb-3">
+                        <i class="bi bi-database-fill-gear me-2 text-success"></i>Database ghi liên tục (SQLite)
+                    </h6>
+                    <div id="db-stats" class="d-flex flex-column gap-2">
+                        <div class="db-stat-item"><span class="text-secondary small">Đang tải...</span></div>
+                    </div>
+                    <div class="small text-secondary mt-3">
+                        Mỗi lần số lượng tăng lên, dòng tương ứng sẽ nhấp nháy xanh — xác nhận dữ liệu đang được ghi liên tục vào <code>iot_monitor.db</code>.
+                    </div>
+                </div>
+            </div>
+        </div>
     </main>
 
     <script>
@@ -288,6 +365,49 @@
                 }
             }
         });
+
+        // --- CẢNH BÁO BẰNG FILE MP3 GHI SẴN (giọng Việt, không gọi API ngoài) ---
+        // Phát khi trạng thái là WARNING/CRITICAL, tối đa 1 lần mỗi 30 giây.
+        // Noi dung: "Nhiệt độ tủ rack server ở mức báo động, xin vui lòng kiểm tra ngay."
+        const ALERT_SOUND_INTERVAL_MS = 30000;
+        let alertSoundEnabled = false;
+        let lastAlertSpokenAt = 0;
+        const alertAudioEl = document.getElementById('alert-audio');
+
+        function playAlertSound() {
+            try {
+                alertAudioEl.currentTime = 0;
+                alertAudioEl.play().catch(e => console.error('Khong phat duoc am thanh (co the bi trinh duyet chan):', e));
+            } catch (e) { console.error('Audio play error', e); }
+        }
+
+        function toggleAlertSound() {
+            alertSoundEnabled = !alertSoundEnabled;
+            const icon = document.getElementById('sound-toggle-icon');
+            const label = document.getElementById('sound-toggle-label');
+            const btn = document.getElementById('sound-toggle-btn');
+            if (alertSoundEnabled) {
+                icon.className = "bi bi-volume-up-fill";
+                label.innerText = "Đang bật âm thanh cảnh báo";
+                btn.className = "btn btn-sm btn-success";
+                // Phát thử 1 lần để "mở khóa" quyền phát âm thanh của trình duyệt (cần tương tác người dùng)
+                playAlertSound();
+            } else {
+                icon.className = "bi bi-volume-mute-fill";
+                label.innerText = "Bật âm thanh cảnh báo";
+                btn.className = "btn btn-sm btn-outline-secondary";
+                alertAudioEl.pause();
+            }
+        }
+
+        function maybeSpeakAlert(status) {
+            if (!alertSoundEnabled) return;
+            if (status !== 'WARNING' && status !== 'CRITICAL') return;
+            const now = Date.now();
+            if (now - lastAlertSpokenAt < ALERT_SOUND_INTERVAL_MS) return;
+            lastAlertSpokenAt = now;
+            playAlertSound();
+        }
 
         // --- 2. CẬP NHẬT DỮ LIỆU REAL-TIME ---
         async function updateDashboard() {
@@ -355,6 +475,8 @@
                     desc.innerText = "Mất kết nối Serial với Arduino";
                     icon.className = "bi bi-plug text-secondary fs-3";
                 }
+
+                maybeSpeakAlert(d.status);
             } catch (e) { console.error(e); }
         }
 
@@ -433,10 +555,67 @@
             updateTablesAndChart();
         }
 
+        // --- 5. TÌNH TRẠNG HARDWARE (MONITOR + DEBUG) ---
+        const HW_BADGE = {
+            ok: { cls: 'hw-ok', label: 'OK' },
+            warning: { cls: 'hw-warning', label: 'CẢNH BÁO' },
+            error: { cls: 'hw-error', label: 'LỖI / MẤT KẾT NỐI' },
+            idle: { cls: 'hw-idle', label: 'KHÔNG HOẠT ĐỘNG' },
+            unknown: { cls: 'hw-unknown', label: 'KHÔNG GIÁM SÁT ĐƯỢC' },
+        };
+
+        async function updateHardwareStatus() {
+            try {
+                const res = await fetch('/api/hardware');
+                const items = await res.json();
+                const body = document.getElementById('hw-table-body');
+                body.innerHTML = items.map(it => {
+                    const b = HW_BADGE[it.status] || HW_BADGE.unknown;
+                    return `<tr>
+                        <td class="font-mono">${it.pin}</td>
+                        <td class="fw-semibold">${it.device}</td>
+                        <td class="text-secondary small">${it.role}</td>
+                        <td><span class="hw-dot ${b.cls}"></span>${b.label}</td>
+                        <td class="font-mono small">${it.detail}</td>
+                    </tr>`;
+                }).join('');
+            } catch (e) { console.error(e); }
+        }
+
+        // --- 6. DATABASE GHI LIÊN TỤC ---
+        let lastDbCounts = {};
+        const DB_TABLE_LABEL = {
+            logs: 'logs (cảm biến)',
+            incidents: 'incidents (sự cố)',
+            access_logs: 'access_logs (RFID)',
+        };
+
+        async function updateDbStats() {
+            try {
+                const res = await fetch('/api/db/stats');
+                const stats = await res.json();
+                const el = document.getElementById('db-stats');
+                el.innerHTML = Object.entries(stats).map(([table, s]) => {
+                    const grew = lastDbCounts[table] !== undefined && s.count > lastDbCounts[table];
+                    return `<div class="db-stat-item ${grew ? 'db-pulse' : ''}">
+                        <i class="bi bi-arrow-repeat text-success"></i>
+                        <span class="text-secondary small flex-grow-1">${DB_TABLE_LABEL[table] || table}</span>
+                        <span class="fw-bold font-mono">${s.count}</span>
+                        <span class="text-secondary small">(ID mới nhất #${s.last_id ?? '-'})</span>
+                    </div>`;
+                }).join('');
+                lastDbCounts = Object.fromEntries(Object.entries(stats).map(([k, v]) => [k, v.count]));
+            } catch (e) { console.error(e); }
+        }
+
         setInterval(updateDashboard, 1500);
         setInterval(updateTablesAndChart, 3000);
+        setInterval(updateHardwareStatus, 2000);
+        setInterval(updateDbStats, 2000);
         updateDashboard();
         updateTablesAndChart();
+        updateHardwareStatus();
+        updateDbStats();
     </script>
 </body>
 </html>

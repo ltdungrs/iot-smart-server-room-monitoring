@@ -1,0 +1,8 @@
+# Secrets - khong duoc push len GitHub
+raspberry_pi/telegram_secrets.py
+
+# Runtime data sinh ra tren Raspberry Pi
+raspberry_pi/*.db
+raspberry_pi/gateway.log
+raspberry_pi/__pycache__/
+*.pyc
