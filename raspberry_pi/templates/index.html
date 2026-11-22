@@ -135,7 +135,7 @@
                         <small id="status-desc" class="opacity-75">Đang chờ tín hiệu từ Arduino...</small>
                     </div>
                     <div class="small font-mono">
-                        Quạt Servo (Pi GPIO18): <span id="val-servo" class="fw-bold">0%</span>
+                        Quạt (Relay D5): <span id="val-servo" class="fw-bold">--</span>
                     </div>
                 </div>
             </div>
@@ -197,7 +197,10 @@
                             Trạng thái cửa: <strong id="val-door" class="text-white">CLOSED</strong>
                         </div>
                     </div>
-                    <div class="small text-secondary">Tự động bật đèn D3 khi phòng tối</div>
+                    <div class="small text-secondary">
+                        Cảm biến LDR: <strong class="text-info font-mono" id="val-ldr">--</strong>
+                        <span class="opacity-75">(thấp = tối, cao = sáng · bật đèn khi &lt;600)</span>
+                    </div>
                 </div>
             </div>
         </div>
@@ -221,7 +224,7 @@
                         <h6 class="fw-bold text-uppercase text-secondary mb-3">
                             <i class="bi bi-sliders me-2 text-warning"></i>Điều khiển từ xa (2 Chiều)
                         </h6>
-                        <label class="small text-secondary fw-semibold mb-1">QUẠT LÀM MÁT (SERVO - Pi GPIO18):</label>
+                        <label class="small text-secondary fw-semibold mb-1">QUẠT LÀM MÁT (RELAY D5):</label>
                         <div class="d-grid gap-2 mb-3">
                             <div class="btn-group">
                                 <button class="btn btn-outline-info fw-semibold" onclick="sendControl('VENT_OPEN')">
@@ -233,6 +236,21 @@
                             </div>
                             <button class="btn btn-outline-success fw-semibold" onclick="sendControl('VENT_AUTO')">
                                 <i class="bi bi-cpu me-1"></i> CHẾ ĐỘ TỰ ĐỘNG (>30°C QUAY)
+                            </button>
+                        </div>
+
+                        <label class="small text-secondary fw-semibold mb-1">ĐÈN PHÒNG SERVER (D3):</label>
+                        <div class="d-grid gap-2 mb-3">
+                            <div class="btn-group">
+                                <button class="btn btn-outline-warning fw-semibold" onclick="sendControl('LIGHT_ON')">
+                                    <i class="bi bi-lightbulb-fill me-1"></i> BẬT ĐÈN
+                                </button>
+                                <button class="btn btn-outline-secondary fw-semibold" onclick="sendControl('LIGHT_OFF')">
+                                    <i class="bi bi-lightbulb me-1"></i> TẮT ĐÈN
+                                </button>
+                            </div>
+                            <button class="btn btn-outline-success fw-semibold" onclick="sendControl('LIGHT_AUTO')">
+                                <i class="bi bi-brightness-high me-1"></i> CHẾ ĐỘ TỰ ĐỘNG (THEO QUANG TRỞ)
                             </button>
                         </div>
 
@@ -381,6 +399,28 @@
             } catch (e) { console.error('Audio play error', e); }
         }
 
+        function unlockAudioSilently() {
+            // Mo khoa quyen phat audio cua trinh duyet (can 1 lan tuong tac nguoi dung)
+            // ma KHONG phat ra tieng thuc su - tranh hieu lam la dang canh bao gia.
+            try {
+                const prevVolume = alertAudioEl.volume;
+                alertAudioEl.volume = 0;
+                const p = alertAudioEl.play();
+                if (p && typeof p.then === "function") {
+                    p.then(() => {
+                        alertAudioEl.pause();
+                        alertAudioEl.currentTime = 0;
+                        alertAudioEl.volume = prevVolume;
+                    }).catch(e => {
+                        alertAudioEl.volume = prevVolume;
+                        console.error('Unlock audio failed', e);
+                    });
+                } else {
+                    alertAudioEl.volume = prevVolume;
+                }
+            } catch (e) { console.error('Unlock audio error', e); }
+        }
+
         function toggleAlertSound() {
             alertSoundEnabled = !alertSoundEnabled;
             const icon = document.getElementById('sound-toggle-icon');
@@ -390,8 +430,8 @@
                 icon.className = "bi bi-volume-up-fill";
                 label.innerText = "Đang bật âm thanh cảnh báo";
                 btn.className = "btn btn-sm btn-success";
-                // Phát thử 1 lần để "mở khóa" quyền phát âm thanh của trình duyệt (cần tương tác người dùng)
-                playAlertSound();
+                // Chi mo khoa quyen phat audio, KHONG phat tieng canh bao thuc su o day
+                unlockAudioSilently();
             } else {
                 icon.className = "bi bi-volume-mute-fill";
                 label.innerText = "Bật âm thanh cảnh báo";
@@ -421,7 +461,7 @@
                 document.getElementById('val-thresh').innerText = Number(d.thresh).toFixed(1);
                 document.getElementById('val-dew').innerText = Number(d.dew_point).toFixed(1);
                 document.getElementById('val-rate').innerText = (d.rise_rate >= 0 ? "+" : "") + Number(d.rise_rate).toFixed(2);
-                document.getElementById('val-servo').innerText = d.servo + "% (Tốc độ quạt)";
+                document.getElementById('val-servo').innerText = d.fan;
                 document.getElementById('last-update').innerText = d.last_update;
                 document.getElementById('conn-badge').innerText = d.conn_type;
 
@@ -443,6 +483,7 @@
                     lightIcon.className = "bi bi-lightbulb text-secondary fs-4";
                 }
                 document.getElementById('val-door').innerText = d.door === 'OPEN' ? "CỬA MỞ / SÁNG" : "ĐÓNG KÍN";
+                document.getElementById('val-ldr').innerText = d.ldr ?? '--';
 
                 // Đổi màu thẻ Trạng thái (Normal / Warning / Critical)
                 const card = document.getElementById('status-card');

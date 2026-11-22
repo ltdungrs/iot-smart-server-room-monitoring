@@ -21,12 +21,6 @@ from flask import Flask, jsonify, request, render_template
 
 import database
 
-try:
-    import RPi.GPIO as GPIO
-    GPIO_AVAILABLE = True
-except ImportError:
-    GPIO_AVAILABLE = False
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -79,138 +73,10 @@ def send_telegram_alert(message):
     return ok
 
 
-# --- DIEU KHIEN SERVO (QUAT LAM MAT) - CHUYEN TU ARDUINO SANG RASPBERRY PI ---
-# Ly do: servo quay lien tuc rut dong tu nguon 5V cua Arduino gay sut ap/treo
-# mach. Servo nay cam truc tiep vao GPIO18 (vat ly pin 12) cua Raspberry Pi,
-# dung nguon 5V rieng (khong chung rail voi Arduino).
-SERVO_GPIO_PIN = 18   # BCM numbering - vat ly pin 12
-SERVO_FREQ_HZ = 50
-MIN_SERVO_RUN_SEC = 60  # Da kich hoat thi phai quay toi thieu 60s (tuong tu logic buzzer 10s ben Arduino)
-
-
-class PiServoController:
-    """Quay servo lien tuc 0<->180 do mo phong quat, toc do theo status
-    (CRITICAL=nhanh, WARNING=vua, NORMAL=tat), ho tro lenh tay VENT_OPEN/
-    VENT_CLOSE/VENT_AUTO va giu quay toi thieu 60s mot khi da kich hoat."""
-
-    def __init__(self, pin=SERVO_GPIO_PIN):
-        self.pin = pin
-        self.available = GPIO_AVAILABLE
-        self.lock = threading.Lock()
-        self.angle = 0
-        self.direction = 1
-        self.mode = 0  # 0=tat, 1=vua (warning), 2=nhanh khong dung (critical)
-        self.manual_override = False
-        self.manual_mode = 0
-        self.latched = False
-        self.latch_start = 0.0
-        self.latched_mode = 0
-
-        if self.available:
-            try:
-                GPIO.setmode(GPIO.BCM)
-                GPIO.setwarnings(False)
-                GPIO.setup(self.pin, GPIO.OUT)
-                self.pwm = GPIO.PWM(self.pin, SERVO_FREQ_HZ)
-                self.pwm.start(self._angle_to_duty(0))
-                log.info("PiServoController: da khoi tao PWM tren GPIO%d (vat ly pin 12)", self.pin)
-            except Exception as exc:
-                log.error("PiServoController: khong khoi tao duoc GPIO%d: %s", self.pin, exc)
-                self.available = False
-        else:
-            log.warning("PiServoController: khong co RPi.GPIO - servo se KHONG quay (chi mo phong %)")
-
-        self.thread = threading.Thread(target=self._run, daemon=True)
-        self.thread.start()
-
-    @staticmethod
-    def _angle_to_duty(angle):
-        # SG90: 0 do ~ 2.5% duty, 180 do ~ 12.5% duty @ 50Hz
-        return 2.5 + (max(0, min(180, angle)) / 180.0) * 10.0
-
-    def update_from_status(self, status):
-        """Goi moi lan co telemetry moi (status tu Arduino) de tinh target mode,
-        tru khi dang bi override thu cong."""
-        target_mode = 2 if status == "CRITICAL" else (1 if status == "WARNING" else 0)
-        now = time.time()
-        with self.lock:
-            if self.manual_override:
-                self.mode = self.manual_mode
-                return
-            if target_mode > 0:
-                if not self.latched:
-                    self.latched = True
-                    self.latch_start = now
-                    self.latched_mode = target_mode
-                else:
-                    self.latched_mode = max(self.latched_mode, target_mode)
-                self.mode = self.latched_mode
-            else:
-                if self.latched:
-                    if now - self.latch_start >= MIN_SERVO_RUN_SEC:
-                        self.latched = False
-                        self.mode = 0
-                    else:
-                        self.mode = self.latched_mode
-                else:
-                    self.mode = 0
-
-    def set_manual(self, cmd):
-        with self.lock:
-            if cmd == "VENT_OPEN":
-                self.manual_override = True
-                self.manual_mode = 2
-                self.mode = 2
-                log.info("PiServoController: lenh tay VENT_OPEN - quat quay toi da")
-            elif cmd == "VENT_CLOSE":
-                self.manual_override = True
-                self.manual_mode = 0
-                self.mode = 0
-                self.latched = False
-                log.info("PiServoController: lenh tay VENT_CLOSE - tat quat")
-            elif cmd == "VENT_AUTO":
-                self.manual_override = False
-                log.info("PiServoController: VENT_AUTO - tra ve che do tu dong theo nhiet do")
-
-    def current_percent(self):
-        with self.lock:
-            return {0: 0, 1: 50, 2: 100}.get(self.mode, 0)
-
-    def _run(self):
-        while True:
-            if not self.available:
-                time.sleep(1)
-                continue
-            with self.lock:
-                mode = self.mode
-            if mode == 0:
-                if self.angle != 0:
-                    self.angle = 0
-                    try:
-                        self.pwm.ChangeDutyCycle(self._angle_to_duty(0))
-                    except Exception as exc:
-                        log.error("PiServoController: loi ghi PWM: %s", exc)
-                time.sleep(0.2)
-                continue
-
-            step_interval = 0.012 if mode == 2 else 0.035
-            step_size = 12 if mode == 2 else 5
-            self.angle += self.direction * step_size
-            if self.angle >= 180:
-                self.angle = 180
-                self.direction = -1
-            elif self.angle <= 0:
-                self.angle = 0
-                self.direction = 1
-            try:
-                self.pwm.ChangeDutyCycle(self._angle_to_duty(self.angle))
-            except Exception as exc:
-                log.error("PiServoController: loi ghi PWM: %s", exc)
-            time.sleep(step_interval)
-
-
-pi_servo = PiServoController()
-
+# Quat lam mat nay do MODULE RELAY tren Arduino (D9) dieu khien ON/OFF truc
+# tiep theo status - khong con can Pi lai GPIO cho servo nua (xem README/commit
+# cu de biet ly do servo bi loai: sut ap Arduino khi quay lien tuc; relay chi
+# rut vai mA de kich ro-le nen an toan de dieu khien ngay tren Arduino).
 
 # Bo nho dem trang thai hien tai
 latest_telemetry = {
@@ -221,9 +87,10 @@ latest_telemetry = {
     "rise_rate": 0.0,
     "door": "CLOSED",
     "light": "OFF",
+    "ldr": 0,
     "thresh": 30.0,
     "status": "DISCONNECTED",
-    "servo": 0,
+    "fan": "OFF",
     "conn_type": "NONE",
     "last_update": "--:--:--",
     "rack_anomaly": False,
@@ -241,7 +108,10 @@ last_recorded_status = "NORMAL"
 # qua >8C giua 2 lan do lien tiep, xay ra >=2 lan trong 6 mau gan nhat -> nghi ho mach.
 rack_history = deque(maxlen=6)
 
-VALID_COMMANDS = {"VENT_OPEN", "VENT_CLOSE", "VENT_AUTO", "ALARM_OFF"}
+VALID_COMMANDS = {
+    "VENT_OPEN", "VENT_CLOSE", "VENT_AUTO", "ALARM_OFF",
+    "LIGHT_ON", "LIGHT_OFF", "LIGHT_AUTO",
+}
 
 # Danh sach nhan vien dang ky the RFID mau
 RFID_DIRECTORY = {
@@ -344,11 +214,7 @@ def serial_worker():
                         status = payload.get("status", "NORMAL")
                         door = payload.get("door", "CLOSED")
                         light = payload.get("light", "OFF")
-
-                        # Servo (quat) nay do Raspberry Pi tu quay qua GPIO18, khong con
-                        # phu thuoc truong "servo" cua Arduino (Arduino khong con servo).
-                        pi_servo.update_from_status(status)
-                        servo = pi_servo.current_percent()
+                        fan = payload.get("fan", "OFF")  # Relay quat (D9) - Arduino tu dong dieu khien
 
                         dew_pt = calculate_dew_point(temp, hum)
                         rise_rt = calculate_rise_rate(rack)
@@ -369,7 +235,7 @@ def serial_worker():
                                     "🔴 <b>CẢNH BÁO QUÁ NHIỆT - SERVER ROOM</b>\n"
                                     f"Tủ Rack (LM35): <b>{rack:.1f}°C</b> (vượt ngưỡng demo 30°C ~ &gt;60°C thực tế)\n"
                                     f"Nhiệt độ phòng (DHT11): {temp:.1f}°C / {hum:.0f}%\n"
-                                    "Servo đã quay làm mát tối đa, buzzer + LED đỏ đã kích hoạt.\n"
+                                    "Relay đã mở quạt, buzzer + LED đỏ đã kích hoạt.\n"
                                     f"Thời gian: {time.strftime('%H:%M:%S %d/%m/%Y')}"
                                 )
                                 threading.Thread(target=send_telegram_alert, args=(alert_msg,), daemon=True).start()
@@ -392,19 +258,18 @@ def serial_worker():
 
                         with data_lock:
                             latest_telemetry.update(payload)
-                            latest_telemetry["servo"] = servo
                             latest_telemetry["dew_point"] = dew_pt
                             latest_telemetry["rise_rate"] = rise_rt
                             latest_telemetry["conn_type"] = conn_label
                             latest_telemetry["last_update"] = time.strftime("%H:%M:%S")
                             latest_telemetry["rack_anomaly"] = rack_anomaly
 
-                        database.insert_log(temp, hum, rack, dew_pt, rise_rt, door, light, status, servo)
+                        database.insert_log(temp, hum, rack, dew_pt, rise_rt, door, light, status, 1 if fan == "ON" else 0)
 
                         log.info(
                             "READING temp=%.1fC hum=%.1f%% rack=%.1fC dew=%.1fC rise=%.2fC/p "
-                            "door=%s light=%s status=%s servo=%s",
-                            temp, hum, rack, dew_pt, rise_rt, door, light, status, servo,
+                            "door=%s light=%s status=%s fan=%s",
+                            temp, hum, rack, dew_pt, rise_rt, door, light, status, fan,
                         )
                 time.sleep(0.05)
 
@@ -468,9 +333,17 @@ def build_hardware_status(t):
         },
         {
             "pin": "A1", "device": "Quang tro 5528 + 10k",
-            "role": "Dung de mo den LED trong phong Server",
+            "role": "Cam bien sang - tu dong bat den phong Server (D3). "
+                    "ADC thap = toi, ADC cao = sang. Nguong bat <600, tat >=700 (sua trong sketch).",
             "status": base(),
-            "detail": f"light={t.get('light')}" if online else "Mat ket noi Arduino",
+            "detail": f"ldr={t.get('ldr')} (light={t.get('light')})" if online else "Mat ket noi Arduino",
+        },
+        {
+            "pin": "D3", "device": "Den phong Server (LED)",
+            "role": "Bat/tat duoc tu Dashboard & Telegram (LIGHT_ON/OFF/AUTO), "
+                    "hoac tu dong theo quang tro A1",
+            "status": base(),
+            "detail": f"den={t.get('light')}" if online else "Mat ket noi Arduino",
         },
         {
             "pin": "A2", "device": "Bien tro 10k",
@@ -485,10 +358,10 @@ def build_hardware_status(t):
             "detail": "Khong co kenh phan hoi qua Serial - kiem tra truc tiep man hinh LCD",
         },
         {
-            "pin": "D5, D6, D7", "device": "LED xanh / vang / do",
+            "pin": "D4, D6, D7", "device": "LED xanh / vang / do",
             "role": "Bao trang thai Normal / Warning / Critical (220 Ohm)",
-            "status": base(),
-            "detail": f"suy ra tu status={t.get('status')}" if online else "Mat ket noi Arduino",
+            "status": "idle",
+            "detail": "Tam thoi khong dung (USE_STATUS_LEDS=false trong sketch Arduino)",
         },
         {
             "pin": "D8", "device": "Buzzer",
@@ -497,14 +370,11 @@ def build_hardware_status(t):
             "detail": ("ON" if t.get("status") in ("WARNING", "CRITICAL") else "OFF") if online else "Mat ket noi Arduino",
         },
         {
-            "pin": "Pi GPIO18 (truoc la D9)", "device": "Servo SG90",
-            "role": "Mo phong quat - DA CHUYEN tu Arduino sang Raspberry Pi dieu khien truc tiep "
-                    "(tranh sut ap servo lam treo mach Arduino). Nguon 5V rieng, tin hieu GPIO18.",
-            "status": "ok" if pi_servo.available else "error",
-            "detail": (
-                f"{pi_servo.current_percent()}% toc do quat (Pi tu dieu khien)"
-                if pi_servo.available else "Loi GPIO tren Pi - servo KHONG quay duoc"
-            ),
+            "pin": "D5", "device": "Module Relay",
+            "role": "Tat/mo quat khi vuot nguong nhiet - Arduino tu dieu khien truc tiep "
+                    "(relay chi rut vai mA, khong gay sut ap nhu Servo truoc day)",
+            "status": base(),
+            "detail": f"fan={t.get('fan')}" if online else "Mat ket noi Arduino",
         },
         {
             "pin": "D10, D11", "device": "HC-05 Bluetooth",
@@ -535,10 +405,15 @@ TELEGRAM_HELP_TEXT = (
     "/hardware - Tình trạng kết nối từng thiết bị\n"
     "/history - 5 lần đo gần nhất\n"
     "/incidents - 5 sự cố gần nhất\n\n"
-    "<b>Điều khiển:</b>\n"
-    "/fan_on - Bật quạt tối đa (ép tay)\n"
-    "/fan_off - Tắt quạt (ép tay)\n"
-    "/fan_auto - Trả quạt về chế độ tự động\n"
+    "<b>Điều khiển quạt (Relay D9):</b>\n"
+    "/fan_on - Mở relay, bật quạt (ép tay)\n"
+    "/fan_off - Đóng relay, tắt quạt (ép tay)\n"
+    "/fan_auto - Trả quạt về chế độ tự động theo nhiệt độ\n\n"
+    "<b>Điều khiển đèn phòng Server (D3):</b>\n"
+    "/light_on - Bật đèn phòng (ép tay)\n"
+    "/light_off - Tắt đèn phòng (ép tay)\n"
+    "/light_auto - Trả đèn về tự động theo quang trở\n\n"
+    "<b>Khác:</b>\n"
     "/mute - Tắt còi báo động\n"
     "/rfid - Demo quẹt thẻ RFID vào phòng\n"
 )
@@ -554,9 +429,9 @@ def format_status_text():
         f"🌡️ Phòng (DHT11): {t.get('temp')}°C / {t.get('hum')}%\n"
         f"🔥 Rack (LM35): {t.get('rack')}°C" + (" ⚠️ nghi hở mạch" if t.get("rack_anomaly") else "") + "\n"
         f"💧 Điểm sương: {t.get('dew_point')}°C | Tốc độ tăng nhiệt: {t.get('rise_rate')}°C/phút\n"
-        f"🚪 Cửa/Cảm biến sáng: {t.get('door')} | Đèn phòng: {t.get('light')}\n"
+        f"🚪 Cửa/Cảm biến sáng: {t.get('door')} | Đèn phòng: {t.get('light')} (LDR={t.get('ldr')})\n"
         f"🎛️ Ngưỡng demo: {t.get('thresh')}°C\n"
-        f"🌀 Quạt (Pi GPIO18): {t.get('servo')}%"
+        f"🌀 Quạt (Relay D9): {t.get('fan')}"
     )
 
 
@@ -608,17 +483,29 @@ def handle_telegram_command(chat_id, text):
     elif cmd == "/incidents":
         send_telegram_message(chat_id, format_incidents_text())
     elif cmd == "/fan_on":
-        pi_servo.set_manual("VENT_OPEN")
-        database.insert_incident("INFO", "Dieu khien qua Telegram: fan_on (quat toi da)")
-        send_telegram_message(chat_id, "🌀 Đã bật quạt tối đa (chế độ thủ công).")
+        ok, msg = send_command_to_arduino("VENT_OPEN")
+        database.insert_incident("INFO", "Dieu khien qua Telegram: fan_on (mo relay quat)")
+        send_telegram_message(chat_id, ("🌀 Đã bật quạt (ép tay). " + msg) if ok else ("⚠️ " + msg))
     elif cmd == "/fan_off":
-        pi_servo.set_manual("VENT_CLOSE")
-        database.insert_incident("INFO", "Dieu khien qua Telegram: fan_off (tat quat)")
-        send_telegram_message(chat_id, "🛑 Đã tắt quạt (chế độ thủ công).")
+        ok, msg = send_command_to_arduino("VENT_CLOSE")
+        database.insert_incident("INFO", "Dieu khien qua Telegram: fan_off (tat relay quat)")
+        send_telegram_message(chat_id, ("🛑 Đã tắt quạt (ép tay). " + msg) if ok else ("⚠️ " + msg))
     elif cmd == "/fan_auto":
-        pi_servo.set_manual("VENT_AUTO")
+        ok, msg = send_command_to_arduino("VENT_AUTO")
         database.insert_incident("INFO", "Dieu khien qua Telegram: fan_auto")
-        send_telegram_message(chat_id, "✅ Đã trả quạt về chế độ tự động theo nhiệt độ.")
+        send_telegram_message(chat_id, ("✅ Đã trả quạt về tự động. " + msg) if ok else ("⚠️ " + msg))
+    elif cmd == "/light_on":
+        ok, msg = send_command_to_arduino("LIGHT_ON")
+        database.insert_incident("INFO", "Dieu khien qua Telegram: light_on (bat den phong)")
+        send_telegram_message(chat_id, ("💡 Đã bật đèn phòng (ép tay). " + msg) if ok else ("⚠️ " + msg))
+    elif cmd == "/light_off":
+        ok, msg = send_command_to_arduino("LIGHT_OFF")
+        database.insert_incident("INFO", "Dieu khien qua Telegram: light_off (tat den phong)")
+        send_telegram_message(chat_id, ("🌑 Đã tắt đèn phòng (ép tay). " + msg) if ok else ("⚠️ " + msg))
+    elif cmd == "/light_auto":
+        ok, msg = send_command_to_arduino("LIGHT_AUTO")
+        database.insert_incident("INFO", "Dieu khien qua Telegram: light_auto")
+        send_telegram_message(chat_id, ("✅ Đã trả đèn phòng về tự động (quang trở). " + msg) if ok else ("⚠️ " + msg))
     elif cmd == "/mute":
         ok, msg = send_command_to_arduino("ALARM_OFF")
         database.insert_incident("INFO", "Dieu khien qua Telegram: mute coi")
@@ -724,14 +611,7 @@ def api_control():
         log.warning("Tu choi lenh dieu khien khong hop le: %r", cmd)
         return jsonify({"success": False, "message": "Lenh khong hop le!"}), 400
 
-    if cmd in ("VENT_OPEN", "VENT_CLOSE", "VENT_AUTO"):
-        # Servo (quat) do Raspberry Pi tu quay qua GPIO18 - xu ly truc tiep,
-        # KHONG gui xuong Arduino (Arduino khong con servo).
-        pi_servo.set_manual(cmd)
-        database.insert_incident("INFO", f"Quan tri vien gui lenh dieu khien quat (Pi GPIO18): {cmd}")
-        return jsonify({"success": True, "message": f"Da thuc thi lenh '{cmd}' tren quat (Raspberry Pi)."})
-
-    # ALARM_OFF van gui qua Serial de Arduino tat coi tai cho
+    # Relay quat (D9) va Buzzer deu do Arduino dieu khien - moi lenh gui qua Serial
     ok, msg = send_command_to_arduino(cmd)
     if ok:
         database.insert_incident("INFO", f"Quan tri vien gui lenh dieu khien tu xa: {cmd}")

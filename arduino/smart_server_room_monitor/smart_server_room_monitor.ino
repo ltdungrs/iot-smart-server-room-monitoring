@@ -23,6 +23,15 @@
 // Tam thoi KHONG dung 3 LED trang thai (xanh/vang/do). Doi thanh true de dung lai.
 #define USE_STATUS_LEDS false
 
+// --- NGUONG CAM BIEN ANH SANG (LDR tren A1) ---
+// Mach: 5V -> LDR -> A1 -> 10k -> GND  =>  TOI = ADC THAP, SANG = ADC CAO.
+// => TANG so nay = NHAY HON (chi can hoi toi la bat den).
+//    GIAM so nay = IT NHAY HON (phai that toi moi bat den).
+// Hai nguong lech nhau tao hysteresis, tranh den chop tat lien tuc o vung ranh gioi.
+// Xem gia tri thuc te tai field "ldr" tren dashboard de tinh chinh cho dung phong cua ban.
+#define LDR_LIGHT_ON_THRESHOLD  600  // ADC < 600  -> TOI  -> bat den
+#define LDR_LIGHT_OFF_THRESHOLD 700  // ADC >= 700 -> SANG -> tat den
+
 // --- 1. ĐỊNH NGHĨA CHÂN ---
 #define PIN_DHT        2    // D2: DHT11
 #define DHTTYPE        DHT11
@@ -72,6 +81,7 @@ float rackTemp = 26.0;
 float demoThreshold = 30.0; // Ngưỡng tối thiểu 30.0°C (Chỉnh được từ 30°C -> 36°C)
 bool isRoomLightOn = false;
 bool isDoorOpen = false;
+int ldrRaw = 0; // Giá trị ADC thô của quang trở (gửi lên dashboard để tinh chỉnh ngưỡng)
 String currentStatus = "NORMAL";
 
 bool isFanOn = false; // Trạng thái relay quạt hiện tại (ON/OFF)
@@ -186,13 +196,29 @@ void readAllSensors() {
 
   // 4. Biến trở (A2) chỉnh ngưỡng Critical từ 30.0°C đến 36.0°C
   // (Tại 26°C luôn luôn nằm trong vùng an toàn NORMAL)
+  // Đọc bỏ 1 mẫu trước: chuyển kênh ADC cần thời gian ổn định tụ sample/hold,
+  // không bỏ mẫu thì giá trị A2 bị "lây" từ kênh A0 vừa đọc (cross-talk).
+  analogRead(PIN_POT);
+  delayMicroseconds(200);
   int potRaw = analogRead(PIN_POT);
   demoThreshold = 30.0 + ((float)potRaw / 1023.0) * 6.0;
 
-  // 5. Quang trở LDR (A1): Tối/che tay -> gợi ý tự động bật đèn phòng Server
-  int ldrVal = analogRead(PIN_LDR);
-  bool autoLightOn = (ldrVal < 180);
-  isDoorOpen = !autoLightOn; // Giữ nguyên logic cũ: sáng mạnh coi như cửa mở/có ánh sáng ngoài
+  // 5. Quang trở LDR (A1): Tối -> bật đèn phòng Server
+  // Mạch: 5V -> LDR -> A1 -> 10k -> GND  =>  TỐI = ADC THẤP, SÁNG = ADC CAO.
+  // Dùng 2 ngưỡng (hysteresis) để đèn không chớp tắt liên tục khi sáng ở mức ranh giới.
+  analogRead(PIN_LDR);
+  delayMicroseconds(200);
+  ldrRaw = analogRead(PIN_LDR);
+
+  bool autoLightOn;
+  if (isRoomLightOn) {
+    // Đang bật: chỉ tắt khi đã sáng rõ (vượt ngưỡng tắt)
+    autoLightOn = (ldrRaw < LDR_LIGHT_OFF_THRESHOLD);
+  } else {
+    // Đang tắt: bật ngay khi tối hơn ngưỡng bật
+    autoLightOn = (ldrRaw < LDR_LIGHT_ON_THRESHOLD);
+  }
+  isDoorOpen = (ldrRaw >= LDR_LIGHT_OFF_THRESHOLD); // Sáng mạnh coi như cửa mở/có ánh sáng ngoài
 
   // Đèn phòng (D3 + D13): theo LDR tự động, TRỪ KHI đang bị ép tay qua Telegram/Dashboard
   if (manualLightOverride) {
@@ -365,6 +391,7 @@ void sendTelemetryJson() {
                 ",\"rack\":" + String(rackTemp, 1) +
                 ",\"door\":\"" + String(isDoorOpen ? "OPEN" : "CLOSED") + "\"" +
                 ",\"light\":\"" + String(isRoomLightOn ? "ON" : "OFF") + "\"" +
+                ",\"ldr\":" + String(ldrRaw) +
                 ",\"thresh\":" + String(demoThreshold, 1) +
                 ",\"status\":\"" + currentStatus + "\"" +
                 ",\"fan\":\"" + String(isFanOn ? "ON" : "OFF") + "\"}";

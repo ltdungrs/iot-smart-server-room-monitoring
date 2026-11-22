@@ -98,13 +98,14 @@ Bluetooth ổn định: đã có ở bước 2.
 Sơ đồ chân Arduino
 Chân	Nối với
 D2	DHT11 : HIỂN THỊ LÊN LCD VÀ GỬI DATA LÊN SERVER
-A0	LM35 : ALERT KHI TỦ RACK NÓNG - ALERT RA BUZZER VÀ ĐÈN LED SÁNG VÀ KÍCH HOẠT SERVO QUAY LIÊN TỤC.
+A0	LM35 : ALERT KHI TỦ RACK NÓNG - ALERT RA BUZZER VÀ ĐÈN LED SÁNG VÀ KÍCH HOẠT MODULE RELAY TẮT VÀ MỞ QUẠT. CHÂN SỐ 5
+RELAY: DÙNG ĐỂ TẮT VÀ MỞ QUẠT. CHÂN SỐ 5. TẮT MỞ KHI CÓ BÁO ĐỘNG VƯỢT NGƯỠNG NHIỆT ĐỘ
 A1	Quang trở + 10k : DÙNG ĐỂ MỞ ĐÈN LED TRONG PHÒNG SERVER
 A2	Biến trở 
 A4, A5	LCD I2C: HIỂN THỊ TRÊN ARDUINO
 D5, D6, D7	LED xanh, vàng, đỏ (220Ω)
 D8	Buzzer
-D9	Servo : MÔ PHỎNG QUẠT, KHI TỦ RACK NÓNG QUÁ VƯỢT NGƯỠNG TRÊN 60 ĐỘ C, SẼ QUAY NHANH KHÔNG DỪNG. LƯU Ý CODE PHẢI DEMO ĐƯỢC VỚI NHIỆT ĐỘ PHÒNG, NÊN LẤY NHIỆT ĐỘT TRUNG BÌNH LÀ 30 ĐỘ C, QUÁ 30 ĐỘ C THÌ COI NHƯ LÀ TRÊN 60 ĐỘ C ĐỂ DEMO QUẠT QUAY. CHUYỂN SANG CHO SERVO KẾT NỐI TRỰC TIẾP VỚI RASPBERRY ĐỂ KÍCH HOẠT QUẠT QUAY LIÊN TỤC.
+D9	Servo: MÔ PHỎNG CHỐT CỬA RA VÀO. CHÂN SỐ 6
 D10, D11	HC-05
 D0, D1 (USB)	Serial dự phòng
 
