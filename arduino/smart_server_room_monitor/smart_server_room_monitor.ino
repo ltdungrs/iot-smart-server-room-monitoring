@@ -4,28 +4,37 @@
  *  - Chống nhảy nhiệt ảo LM35 bằng hàm đo điện áp thực tế readVcc()
  *  - Khóa ngưỡng chuẩn Demo: < 28.5°C = NORMAL (26°C không bao giờ báo động giả)
  *    28.5°C - 30.0°C = WARNING | > 30.0°C (coi như >60°C) = CRITICAL
- *  - Servo (D9) chạy tối thiểu 10 giây | Buzzer (D8) kêu vừa tai tối thiểu 2 giây
+ *  - Quạt điều khiển qua MODULE RELAY (D9, ON/OFF) - KHÔNG dùng Servo nữa vì
+ *    relay chỉ rút vài mA để kích rơ-le, không gây sụt áp như Servo quay liên
+ *    tục. Quạt thật được cấp nguồn riêng, relay chỉ đóng/mở tiếp điểm.
+ *  - Buzzer (D8) kêu vừa tai tối thiểu 2 giây
  */
 
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include <DHT.h>
-#include <Servo.h>
 #include <SoftwareSerial.h>
 
 #define USE_PASSIVE_BUZZER false
 
+// Doi thanh true neu module relay cua ban la loai ACTIVE-LOW (kich muc LOW de dong tiep diem)
+#define RELAY_ACTIVE_LOW false
+
+// Tam thoi KHONG dung 3 LED trang thai (xanh/vang/do). Doi thanh true de dung lai.
+#define USE_STATUS_LEDS false
+
 // --- 1. ĐỊNH NGHĨA CHÂN ---
 #define PIN_DHT        2    // D2: DHT11
 #define DHTTYPE        DHT11
-#define PIN_ROOM_LED   3    // D3: Đèn LED phòng Server (Điều khiển bởi LDR)
-#define PIN_LED_GREEN  5    // D5: LED Xanh (Normal)
-#define PIN_LED_YELLOW 6    // D6: LED Vàng (Warning)
-#define PIN_LED_RED    7    // D7: LED Đỏ (Critical)
+#define PIN_ROOM_LED   3    // D3: Đèn LED phòng Server (bật/tắt được + tự động theo LDR)
+#define PIN_LED_GREEN  4    // D4: LED Xanh (Normal) - chỉ dùng khi USE_STATUS_LEDS = true
+#define PIN_RELAY      5    // D5: Module Relay - tắt/mở quạt khi vượt ngưỡng nhiệt
+#define PIN_LED_YELLOW 6    // D6: LED Vàng (Warning) - chỉ dùng khi USE_STATUS_LEDS = true
+#define PIN_LED_RED    7    // D7: LED Đỏ (Critical) - chỉ dùng khi USE_STATUS_LEDS = true
 #define PIN_BUZZER     8    // D8: Còi Buzzer
-#define PIN_SERVO      9    // D9: Servo SG90 mô phỏng quạt
 #define PIN_BT_RX      10   // D10: TXD của HC-05
 #define PIN_BT_TX      11   // D11: RXD của HC-05
+// D9: để trống (trước đây là Servo/Relay)
 
 #define PIN_LM35       A0   // A0: Cảm biến điểm nóng tủ Rack
 #define PIN_LDR        A1   // A1: Quang trở + trở 10k
@@ -34,7 +43,6 @@
 // --- 2. KHỞI TẠO ĐỐI TƯỢNG ---
 DHT dht(PIN_DHT, DHTTYPE);
 LiquidCrystal_I2C lcd(0x27, 16, 2);
-Servo fanServo;
 SoftwareSerial btSerial(PIN_BT_RX, PIN_BT_TX);
 
 // --- 3. BIẾN ĐỊNH THỜI NON-BLOCKING ---
@@ -44,11 +52,10 @@ const unsigned long SENSOR_INTERVAL = 2000;
 unsigned long prevLcdMillis = 0;
 const unsigned long LCD_INTERVAL = 800;
 
-unsigned long prevServoMillis = 0;
 unsigned long prevBlinkMillis = 0;
 bool blinkState = false;
 
-const unsigned long MIN_SERVO_RUN_MS  = 10000UL; // Quạt chạy tối thiểu 10 giây
+const unsigned long MIN_FAN_RUN_MS    = 10000UL; // Quạt chạy tối thiểu 10 giây (chống đóng/mở relay liên tục)
 const unsigned long MIN_BUZZER_RUN_MS = 2000UL;  // Còi kêu tối thiểu 2 giây
 
 bool isFanLatched = false;
@@ -67,13 +74,15 @@ bool isRoomLightOn = false;
 bool isDoorOpen = false;
 String currentStatus = "NORMAL";
 
-int servoAngle = 0;
-int servoDirection = 1;
-int fanSpeedMode = 0;
+bool isFanOn = false; // Trạng thái relay quạt hiện tại (ON/OFF)
+int fanSpeedMode = 0; // 0 = tắt, >0 = mở (giữ nguyên bậc latch cũ: 1=Warning, 2=Critical)
 
 bool manualOverride = false;
 int manualFanMode = 0;
 bool alarmSilenced = false;
+
+bool manualLightOverride = false;
+int manualLightMode = 0; // 0 = tắt, 1 = bật (khi bị ép tay qua Telegram/Dashboard)
 
 String usbCmdBuffer = "";
 String btCmdBuffer = "";
@@ -84,20 +93,23 @@ void setup() {
 
   pinMode(PIN_ROOM_LED, OUTPUT);
   pinMode(LED_BUILTIN, OUTPUT);
-  pinMode(PIN_LED_GREEN, OUTPUT);
-  pinMode(PIN_LED_YELLOW, OUTPUT);
-  pinMode(PIN_LED_RED, OUTPUT);
   pinMode(PIN_BUZZER, OUTPUT);
+  pinMode(PIN_RELAY, OUTPUT);
 
   digitalWrite(PIN_ROOM_LED, LOW);
   digitalWrite(LED_BUILTIN, LOW);
+
+#if USE_STATUS_LEDS
+  pinMode(PIN_LED_GREEN, OUTPUT);
+  pinMode(PIN_LED_YELLOW, OUTPUT);
+  pinMode(PIN_LED_RED, OUTPUT);
   digitalWrite(PIN_LED_GREEN, LOW);
   digitalWrite(PIN_LED_YELLOW, LOW);
   digitalWrite(PIN_LED_RED, LOW);
-  stopBuzzer();
+#endif
 
-  fanServo.attach(PIN_SERVO);
-  fanServo.write(0);
+  stopBuzzer();
+  setFanRelay(false); // Quạt tắt ban đầu
 
   dht.begin();
   lcd.init();
@@ -129,7 +141,6 @@ void loop() {
   }
 
   handleAlertsAndLeds(currentMillis);
-  handleFanServoContinuous(currentMillis);
 }
 
 /**
@@ -178,19 +189,19 @@ void readAllSensors() {
   int potRaw = analogRead(PIN_POT);
   demoThreshold = 30.0 + ((float)potRaw / 1023.0) * 6.0;
 
-  // 5. Quang trở LDR (A1): Tối/che tay -> Bật đèn phòng Server (D3 + D13)
+  // 5. Quang trở LDR (A1): Tối/che tay -> gợi ý tự động bật đèn phòng Server
   int ldrVal = analogRead(PIN_LDR);
-  if (ldrVal < 450) {
-    isRoomLightOn = true;
-    isDoorOpen = false;
-    digitalWrite(PIN_ROOM_LED, HIGH);
-    digitalWrite(LED_BUILTIN, HIGH);
+  bool autoLightOn = (ldrVal < 180);
+  isDoorOpen = !autoLightOn; // Giữ nguyên logic cũ: sáng mạnh coi như cửa mở/có ánh sáng ngoài
+
+  // Đèn phòng (D3 + D13): theo LDR tự động, TRỪ KHI đang bị ép tay qua Telegram/Dashboard
+  if (manualLightOverride) {
+    isRoomLightOn = (manualLightMode == 1);
   } else {
-    isRoomLightOn = false;
-    isDoorOpen = true;
-    digitalWrite(PIN_ROOM_LED, LOW);
-    digitalWrite(LED_BUILTIN, LOW);
+    isRoomLightOn = autoLightOn;
   }
+  digitalWrite(PIN_ROOM_LED, isRoomLightOn ? HIGH : LOW);
+  digitalWrite(LED_BUILTIN, isRoomLightOn ? HIGH : LOW);
 }
 
 void evaluateSystemLogic(unsigned long currentMillis) {
@@ -219,7 +230,7 @@ void evaluateSystemLogic(unsigned long currentMillis) {
     shouldTriggerBuzzer = false;
   }
 
-  // Duy trì Servo quay tối thiểu 10 giây
+  // Duy trì Relay quạt mở tối thiểu 10 giây (chống đóng/mở liên tục gây hỏng relay)
   if (manualOverride) {
     fanSpeedMode = manualFanMode;
     isFanLatched = false;
@@ -235,7 +246,7 @@ void evaluateSystemLogic(unsigned long currentMillis) {
       fanSpeedMode = latchedFanMode;
     } else {
       if (isFanLatched) {
-        if (currentMillis - fanLatchStartMillis >= MIN_SERVO_RUN_MS) {
+        if (currentMillis - fanLatchStartMillis >= MIN_FAN_RUN_MS) {
           isFanLatched = false;
           fanSpeedMode = 0;
         } else {
@@ -246,6 +257,8 @@ void evaluateSystemLogic(unsigned long currentMillis) {
       }
     }
   }
+
+  setFanRelay(fanSpeedMode > 0);
 
   // Duy trì Buzzer kêu tối thiểu 2 giây
   if (shouldTriggerBuzzer && !alarmSilenced) {
@@ -267,34 +280,19 @@ void evaluateSystemLogic(unsigned long currentMillis) {
   }
 }
 
-void handleFanServoContinuous(unsigned long currentMillis) {
-  if (fanSpeedMode == 0) {
-    if (servoAngle != 0) {
-      servoAngle = 0;
-      fanServo.write(0);
-    }
-    return;
-  }
-
-  unsigned long stepInterval = (fanSpeedMode == 2) ? 12 : 30;
-  int stepSize = (fanSpeedMode == 2) ? 14 : 6;
-
-  if (currentMillis - prevServoMillis >= stepInterval) {
-    prevServoMillis = currentMillis;
-    servoAngle += (servoDirection * stepSize);
-
-    if (servoAngle >= 180) {
-      servoAngle = 180;
-      servoDirection = -1;
-    } else if (servoAngle <= 0) {
-      servoAngle = 0;
-      servoDirection = 1;
-    }
-    fanServo.write(servoAngle);
-  }
+/**
+ * Dong/mo Relay dieu khien quat (D9). true = mo quat, false = tat quat.
+ * Chi goi khi co thay doi trang thai de tranh nhap nhay relay khong can thiet.
+ */
+void setFanRelay(bool turnOn) {
+  if (turnOn == isFanOn) return;
+  isFanOn = turnOn;
+  bool energize = RELAY_ACTIVE_LOW ? !turnOn : turnOn;
+  digitalWrite(PIN_RELAY, energize ? HIGH : LOW);
 }
 
 void handleAlertsAndLeds(unsigned long currentMillis) {
+#if USE_STATUS_LEDS
   if (currentStatus == "NORMAL") {
     digitalWrite(PIN_LED_GREEN, HIGH);
     digitalWrite(PIN_LED_YELLOW, LOW);
@@ -312,6 +310,7 @@ void handleAlertsAndLeds(unsigned long currentMillis) {
       digitalWrite(PIN_LED_RED, blinkState ? HIGH : LOW);
     }
   }
+#endif
 
   // Kêu còi mức vừa phải (100ms BẬT / 220ms TẮT) duy trì tối thiểu 2 giây
   if (isBuzzerLatched && !alarmSilenced) {
@@ -351,7 +350,7 @@ void updateLcdDisplay() {
   char line1[17];
   if (currentStatus == "NORMAL" && isFanLatched) {
     unsigned long elapsed = millis() - fanLatchStartMillis;
-    unsigned long remainSec = (elapsed < MIN_SERVO_RUN_MS) ? ((MIN_SERVO_RUN_MS - elapsed) / 1000) : 0;
+    unsigned long remainSec = (elapsed < MIN_FAN_RUN_MS) ? ((MIN_FAN_RUN_MS - elapsed) / 1000) : 0;
     snprintf(line1, sizeof(line1), "COOLING: %02lus    ", remainSec);
   } else {
     const char* lightStr = isRoomLightOn ? "L:ON " : "L:OFF";
@@ -368,7 +367,7 @@ void sendTelemetryJson() {
                 ",\"light\":\"" + String(isRoomLightOn ? "ON" : "OFF") + "\"" +
                 ",\"thresh\":" + String(demoThreshold, 1) +
                 ",\"status\":\"" + currentStatus + "\"" +
-                ",\"servo\":" + String(fanSpeedMode == 0 ? 0 : (fanSpeedMode == 1 ? 50 : 100)) + "}";
+                ",\"fan\":\"" + String(isFanOn ? "ON" : "OFF") + "\"}";
 
   Serial.println(json);
   btSerial.println(json);
@@ -414,5 +413,13 @@ void executeCommand(String cmd) {
     alarmSilenced = true;
     isBuzzerLatched = false;
     stopBuzzer();
+  } else if (cmd == "LIGHT_ON") {
+    manualLightOverride = true;
+    manualLightMode = 1;
+  } else if (cmd == "LIGHT_OFF") {
+    manualLightOverride = true;
+    manualLightMode = 0;
+  } else if (cmd == "LIGHT_AUTO") {
+    manualLightOverride = false;
   }
 }
